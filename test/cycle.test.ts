@@ -4,6 +4,7 @@ import type { AppConfig } from "../src/config.ts";
 import { JsonCursorStore } from "../src/cursor/store.ts";
 import type { CursorStore } from "../src/cursor/store.ts";
 import { runCycle, type CycleDeps } from "../src/cycle.ts";
+import { MediaTooLargeError } from "../src/waha/client.ts";
 import type { Cursor } from "../src/parse/messages.ts";
 import type { WebhookPayload } from "../src/payload/format.ts";
 import { mkdtemp, readFile } from "node:fs/promises";
@@ -15,6 +16,10 @@ const config: AppConfig = {
   wahaSession: "default",
   wahaGroupId: "120363012345@g.us",
   intervalMinutes: 5,
+  transcribeProvider: "speaches",
+  whisperBaseUrl: "http://whisper:8000/v1",
+  whisperModel: "Systran/faster-whisper-base",
+  maxInlineFileMb: 5,
   webhookUrl: "https://example.test/hook",
   webhookKey: "secret",
   webhookHeader: "Authorization: Bearer ${GROKBOT_WEBHOOK_KEY}",
@@ -43,7 +48,6 @@ function deps(overrides: Partial<CycleDeps> = {}): { deps: CycleDeps; posts: Web
     download: async () => ({ data: Buffer.from("file"), contentType: "application/octet-stream" }),
     transcriber: { name: "fake", transcribe: async () => "transcribed words" },
     extractAudio: async () => Buffer.from("audio"),
-    storage: { upload: async () => "https://files.example/presigned" },
     extractPdfText: async () => "pdf #plataforma",
     postWebhook: async (payload) => {
       posts.push(payload);
@@ -102,8 +106,10 @@ describe("runCycle", () => {
       type: "text",
       text: "revisar #plataforma",
       transcript: null,
-      file_url: null,
+      mime_type: null,
       file_name: null,
+      data_base64: null,
+      note: null,
       reply_to: "old",
     });
     assert.equal(harness.cursor.value?.seenIdsAtTimestamp.includes("new"), true);
@@ -113,8 +119,7 @@ describe("runCycle", () => {
     assert.equal(harness.posts.length, 1);
   });
 
-  it("transcribes audio and does not upload it", async () => {
-    let uploaded = false;
+  it("transcribes audio and does not inline the file", async () => {
     const harness = deps({
       listMessages: async () => [
         {
@@ -125,19 +130,13 @@ describe("runCycle", () => {
           media: { url: "http://localhost:3000/api/files/voice.ogg", mimetype: "audio/ogg; codecs=opus", filename: null },
         },
       ],
-      storage: {
-        upload: async () => {
-          uploaded = true;
-          return "https://files.example/nope";
-        },
-      },
     });
     harness.cursor.value = { lastTimestamp: 1_704_067_200_000, seenIdsAtTimestamp: [] };
     await runCycle(harness.deps);
-    assert.equal(uploaded, false);
     assert.equal(harness.posts[0]?.messages[0]?.type, "audio");
     assert.equal(harness.posts[0]?.messages[0]?.transcript, "transcribed words");
-    assert.equal(harness.posts[0]?.messages[0]?.file_url, null);
+    assert.equal(harness.posts[0]?.messages[0]?.data_base64, null);
+    assert.equal(harness.posts[0]?.messages[0]?.note, null);
   });
 
   it("extracts video audio through ffmpeg and transcribes that buffer", async () => {
@@ -171,10 +170,10 @@ describe("runCycle", () => {
     assert.equal(seen?.toString(), "file");
     assert.equal(harness.posts[0]?.messages[0]?.type, "video");
     assert.equal(harness.posts[0]?.messages[0]?.transcript, "video words");
-    assert.equal(harness.posts[0]?.messages[0]?.file_url, null);
+    assert.equal(harness.posts[0]?.messages[0]?.data_base64, null);
   });
 
-  it("uploads a pdf, keeps the extracted text, and does not advance the cursor when the webhook fails", async () => {
+  it("inlines a pdf as base64 plus extracted text, and does not advance the cursor when the webhook fails", async () => {
     const seen: WebhookPayload[] = [];
     const harness = deps({
       listMessages: async () => [
@@ -195,11 +194,45 @@ describe("runCycle", () => {
     });
     harness.cursor.value = { lastTimestamp: 1_704_067_200_000, seenIdsAtTimestamp: [] };
     await assert.rejects(() => runCycle(harness.deps), /webhook down/);
-    assert.equal(seen[0]?.messages[0]?.file_url, "https://files.example/presigned");
+    assert.equal(seen[0]?.messages[0]?.mime_type, "application/pdf");
     assert.equal(seen[0]?.messages[0]?.file_name, "spec.pdf");
+    assert.equal(seen[0]?.messages[0]?.data_base64, Buffer.from("file").toString("base64"));
+    assert.equal(seen[0]?.messages[0]?.note, null);
     assert.equal(seen[0]?.messages[0]?.text, "adjunto\n\npdf #plataforma");
     assert.equal(seen[0]?.repo, "jreyessn/plataforma_tm");
     assert.deepEqual(harness.cursor.value, { lastTimestamp: 1_704_067_200_000, seenIdsAtTimestamp: [] });
+  });
+
+  it("sends an oversized image without bytes and with note too_large", async () => {
+    let extracted = false;
+    const harness = deps({
+      listMessages: async () => [
+        {
+          id: "big",
+          timestamp: 1704067260,
+          participant: "5491111111111@c.us",
+          from: "120363012345@g.us",
+          hasMedia: true,
+          media: { url: "http://waha:3000/api/files/photo.jpg", mimetype: "image/jpeg", filename: "photo.jpg" },
+        },
+      ],
+      download: async () => {
+        throw new MediaTooLargeError(9 * 1024 * 1024, 5 * 1024 * 1024);
+      },
+      extractPdfText: async () => {
+        extracted = true;
+        return "no";
+      },
+    });
+    harness.cursor.value = { lastTimestamp: 1_704_067_200_000, seenIdsAtTimestamp: [] };
+    await runCycle(harness.deps);
+    const message = harness.posts[0]?.messages[0];
+    assert.equal(message?.type, "image");
+    assert.equal(message?.mime_type, "image/jpeg");
+    assert.equal(message?.file_name, "photo.jpg");
+    assert.equal(message?.data_base64, null);
+    assert.equal(message?.note, "too_large");
+    assert.equal(extracted, false);
   });
 
   it("persists the cursor as json", async () => {

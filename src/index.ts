@@ -26,7 +26,8 @@ log("info", "worker.start", {
   group: config.wahaGroupId,
   intervalMinutes: config.intervalMinutes,
   transcriber: runtime.cycle.transcriber?.name ?? null,
-  storage: Boolean(config.storage),
+  whisperModel: config.transcribeProvider === "openai" ? "whisper-1" : config.whisperModel,
+  maxInlineFileMb: config.maxInlineFileMb,
 });
 
 while (!stopped) {

@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { RepoAlias } from "../config.js";
 import type { MessageType } from "../parse/messages.js";
 
+export const TOO_LARGE_NOTE = "too_large";
+
 export interface OutboundMessage {
   id: string;
   author: string;
@@ -9,8 +11,10 @@ export interface OutboundMessage {
   type: MessageType;
   text: string | null;
   transcript: string | null;
-  file_url: string | null;
+  mime_type: string | null;
   file_name: string | null;
+  data_base64: string | null;
+  note: typeof TOO_LARGE_NOTE | null;
   reply_to: string | null;
 }
 

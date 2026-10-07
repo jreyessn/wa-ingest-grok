@@ -24,11 +24,28 @@ services:
       # media.url is built from this base so the worker can download files on the compose network.
       WAHA_BASE_URL: http://waha:3000
 
+  # Speaches (faster-whisper) with an OpenAI-compatible API. CPU image, no published port.
+  # Docs: https://speaches.ai/configuration/ and compose.cpu.yaml from speaches-ai/speaches.
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    restart: unless-stopped
+    volumes:
+      - whisper-models:/home/ubuntu/.cache/huggingface/hub
+    environment:
+      WHISPER__INFERENCE_DEVICE: cpu
+      WHISPER__COMPUTE_TYPE: int8
+      STT_MODEL_TTL: "-1"
+      ENABLE_UI: "false"
+      LOG_LEVEL: info
+      # JSON list. Pydantic reads it as preload_models and downloads the model before serving.
+      PRELOAD_MODELS: '["${WHISPER_MODEL:-Systran/faster-whisper-base}"]'
+
   worker:
     build: .
     restart: unless-stopped
     depends_on:
       - waha
+      - whisper
     volumes:
       - worker-data:/data
     environment:
@@ -37,22 +54,20 @@ services:
       WAHA_SESSION: ${WAHA_SESSION:-default}
       WAHA_GROUP_ID: ${WAHA_GROUP_ID:-}
       INTERVAL_MINUTES: ${INTERVAL_MINUTES:-5}
+      TRANSCRIBE_PROVIDER: ${TRANSCRIBE_PROVIDER:-speaches}
+      WHISPER_BASE_URL: ${WHISPER_BASE_URL:-http://whisper:8000/v1}
+      WHISPER_MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-base}
+      WHISPER_API_KEY: ${WHISPER_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MAX_INLINE_FILE_MB: ${MAX_INLINE_FILE_MB:-5}
       GROKBOT_WEBHOOK_URL: ${GROKBOT_WEBHOOK_URL:-}
       GROKBOT_WEBHOOK_KEY: ${GROKBOT_WEBHOOK_KEY:-}
       GROKBOT_WEBHOOK_HEADER: ${GROKBOT_WEBHOOK_HEADER:-}
-      STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-}
-      STORAGE_REGION: ${STORAGE_REGION:-auto}
-      STORAGE_BUCKET: ${STORAGE_BUCKET:-}
-      STORAGE_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY_ID:-}
-      STORAGE_SECRET_ACCESS_KEY: ${STORAGE_SECRET_ACCESS_KEY:-}
-      STORAGE_FORCE_PATH_STYLE: ${STORAGE_FORCE_PATH_STYLE:-}
-      STORAGE_PREFIX: ${STORAGE_PREFIX:-}
-      STORAGE_URL_EXPIRES_SECONDS: ${STORAGE_URL_EXPIRES_SECONDS:-}
       REPO_ALIASES: ${REPO_ALIASES:-}
       DATA_DIR: /data
 
 volumes:
   waha-sessions:
   waha-media:
+  whisper-models:
   worker-data:

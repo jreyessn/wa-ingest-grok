@@ -31,6 +31,18 @@ export interface WahaMedia {
 const PAGE_SIZE = 100;
 const MAX_PAGES = 20;
 
+export class MediaTooLargeError extends Error {
+  readonly bytes: number;
+  readonly limit: number;
+
+  constructor(bytes: number, limit: number) {
+    super(`media is ${bytes} bytes, over the ${limit} byte limit`);
+    this.name = "MediaTooLargeError";
+    this.bytes = bytes;
+    this.limit = limit;
+  }
+}
+
 export class WahaClient {
   constructor(
     private readonly baseUrl: string,
@@ -155,17 +167,19 @@ export class WahaClient {
     };
   }
 
-  async download(url: string): Promise<{ data: Buffer; contentType: string | null }> {
+  async download(url: string, maxBytes: number): Promise<{ data: Buffer; contentType: string | null }> {
     const resolved = resolveMediaUrl(url, this.baseUrl);
     const headers = new Headers();
     if (this.apiKey) headers.set("X-Api-Key", this.apiKey);
     const response = await this.fetchImpl(resolved, { headers });
     if (!response.ok) throw await this.failure("download media", response);
     const advertised = Number(response.headers.get("content-length") ?? "0");
-    if (Number.isFinite(advertised) && advertised > 50 * 1024 * 1024) {
-      throw new Error(`media is ${advertised} bytes, over the 50MB download limit`);
+    if (Number.isFinite(advertised) && advertised > maxBytes) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new MediaTooLargeError(advertised, maxBytes);
     }
     const data = Buffer.from(await response.arrayBuffer());
+    if (data.length > maxBytes) throw new MediaTooLargeError(data.length, maxBytes);
     return { data, contentType: response.headers.get("content-type") };
   }
 

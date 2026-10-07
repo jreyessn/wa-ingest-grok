@@ -9,10 +9,9 @@ import {
   selectNewMessages,
   type ParsedMessage,
 } from "./parse/messages.js";
-import { buildPayload, type OutboundMessage, type WebhookPayload } from "./payload/format.js";
-import type { ObjectStorage } from "./storage/s3.js";
+import { buildPayload, TOO_LARGE_NOTE, type OutboundMessage, type WebhookPayload } from "./payload/format.js";
+import { MediaTooLargeError } from "./waha/client.js";
 
-const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 const MAX_WHISPER_BYTES = 25 * 1024 * 1024;
 const MAX_MESSAGES_PER_CYCLE = 200;
 
@@ -20,11 +19,10 @@ export interface CycleDeps {
   config: AppConfig;
   listMessages: (chatId: string, sinceUnixSeconds: number) => Promise<unknown[]>;
   refetchMedia: (chatId: string, messageId: string) => Promise<ParsedMessage["media"]>;
-  download: (url: string) => Promise<{ data: Buffer; contentType: string | null }>;
+  download: (url: string, maxBytes: number) => Promise<{ data: Buffer; contentType: string | null }>;
   cursor: CursorStore;
   transcriber: Transcriber | null;
   extractAudio: (video: Buffer) => Promise<Buffer>;
-  storage: ObjectStorage | null;
   extractPdfText: (data: Buffer) => Promise<string>;
   postWebhook: (payload: WebhookPayload, header: { name: string; value: string }) => Promise<void>;
   now?: () => number;
@@ -104,8 +102,10 @@ async function enrichMessage(deps: CycleDeps, groupId: string, message: ParsedMe
     type: message.type,
     text: message.text,
     transcript: null,
-    file_url: null,
-    file_name: message.media?.filename ?? null,
+    mime_type: null,
+    file_name: null,
+    data_base64: null,
+    note: null,
     reply_to: message.replyTo,
   };
   if (message.type === "text") return outbound;
@@ -116,31 +116,30 @@ async function enrichMessage(deps: CycleDeps, groupId: string, message: ParsedMe
       log("warn", "message.media_missing", { id: message.id, type: message.type });
       return outbound;
     }
-    const downloaded = await deps.download(media.url);
-    if (downloaded.data.length > MAX_DOWNLOAD_BYTES) {
-      throw new Error(`media is ${downloaded.data.length} bytes, over the ${MAX_DOWNLOAD_BYTES} byte limit`);
-    }
-    const contentType = media.mimetype ?? downloaded.contentType ?? "application/octet-stream";
-    if (!outbound.file_name) outbound.file_name = filenameFromUrl(media.url, message.type);
+    const fileName = media.filename ? safeFilename(media.filename) : filenameFromUrl(media.url, message.type);
 
     if (message.type === "audio" || message.type === "video") {
-      outbound.transcript = await transcribe(deps, message, downloaded.data, contentType, outbound.file_name);
+      const downloaded = await deps.download(media.url, MAX_WHISPER_BYTES);
+      const contentType = media.mimetype ?? downloaded.contentType ?? "application/octet-stream";
+      outbound.transcript = await transcribe(deps, message, downloaded.data, contentType, fileName);
       return outbound;
     }
 
-    if (!deps.storage) {
-      log("error", "storage.not_configured", { id: message.id, type: message.type });
-      return outbound;
+    const limit = Math.floor(deps.config.maxInlineFileMb * 1024 * 1024);
+    let downloaded: { data: Buffer; contentType: string | null };
+    try {
+      downloaded = await deps.download(media.url, limit);
+    } catch (err) {
+      if (err instanceof MediaTooLargeError) {
+        return markTooLarge(outbound, media.mimetype, fileName, message.id, err.bytes);
+      }
+      throw err;
     }
-    const key = `${safeKey(message.id)}/${safeFilename(outbound.file_name ?? "file.bin")}`;
-    outbound.file_url = await deps.storage.upload({
-      key,
-      body: downloaded.data,
-      contentType,
-    });
-    outbound.file_name = safeFilename(outbound.file_name ?? "file.bin");
-
-    if (contentType.toLowerCase().includes("pdf") || (outbound.file_name ?? "").toLowerCase().endsWith(".pdf")) {
+    const contentType = media.mimetype ?? downloaded.contentType ?? "application/octet-stream";
+    outbound.mime_type = contentType;
+    outbound.file_name = fileName;
+    outbound.data_base64 = downloaded.data.toString("base64");
+    if (isPdf(contentType, fileName)) {
       const extracted = (await deps.extractPdfText(downloaded.data)).trim();
       outbound.text = joinText(message.text, extracted);
     }
@@ -149,6 +148,25 @@ async function enrichMessage(deps: CycleDeps, groupId: string, message: ParsedMe
     log("error", "message.enrich_failed", { id: message.id, type: message.type, error: errorMessage(err) });
     return outbound;
   }
+}
+
+function markTooLarge(
+  outbound: OutboundMessage,
+  mimeType: string | null,
+  fileName: string,
+  id: string,
+  bytes: number,
+): OutboundMessage {
+  outbound.mime_type = mimeType;
+  outbound.file_name = fileName;
+  outbound.data_base64 = null;
+  outbound.note = TOO_LARGE_NOTE;
+  log("warn", "message.too_large", { id, bytes, type: outbound.type });
+  return outbound;
+}
+
+function isPdf(mimeType: string, fileName: string): boolean {
+  return mimeType.toLowerCase().includes("pdf") || fileName.toLowerCase().endsWith(".pdf");
 }
 
 async function resolveMedia(deps: CycleDeps, groupId: string, message: ParsedMessage): Promise<ParsedMessage["media"]> {
@@ -215,9 +233,4 @@ export function safeFilename(name: string): string {
   const base = name.split(/[/\\]/).pop() ?? "file.bin";
   const cleaned = base.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "").slice(0, 180);
   return cleaned.length > 0 ? cleaned : "file.bin";
-}
-
-function safeKey(id: string): string {
-  const cleaned = id.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 180);
-  return cleaned.length > 0 ? cleaned : "message";
 }

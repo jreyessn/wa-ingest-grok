@@ -11,8 +11,10 @@ function message(overrides: Partial<OutboundMessage> = {}): OutboundMessage {
     type: "text",
     text: "hola",
     transcript: null,
-    file_url: null,
+    mime_type: null,
     file_name: null,
+    data_base64: null,
+    note: null,
     reply_to: null,
     ...overrides,
   };
@@ -66,14 +68,36 @@ describe("buildPayload", () => {
         message({
           type: "document",
           text: "caption\n\nbody #otro",
-          file_url: "https://files.example/spec.pdf",
+          mime_type: "application/pdf",
           file_name: "spec.pdf",
+          data_base64: "JVBERg==",
+          note: null,
         }),
       ],
       aliases,
     });
     assert.equal(payload?.repo, "acme/otro");
-    assert.equal(payload?.messages[0]?.file_url, "https://files.example/spec.pdf");
+    assert.equal(payload?.messages[0]?.data_base64, "JVBERg==");
+    assert.equal(payload?.messages[0]?.note, null);
+  });
+
+  it("keeps a too_large note and omits the file bytes", () => {
+    const payload = buildPayload({
+      group: "g",
+      messages: [
+        message({
+          type: "image",
+          mime_type: "image/jpeg",
+          file_name: "photo.jpg",
+          data_base64: null,
+          note: "too_large",
+        }),
+      ],
+      aliases,
+    });
+    assert.equal(payload?.messages[0]?.note, "too_large");
+    assert.equal(payload?.messages[0]?.data_base64, null);
+    assert.equal("file_url" in (payload?.messages[0] ?? {}), false);
   });
 
   it("returns null when there is nothing to send", () => {

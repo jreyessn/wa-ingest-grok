@@ -3,16 +3,10 @@ export interface RepoAlias {
   repo: string;
 }
 
-export interface StorageConfig {
-  endpoint?: string;
-  region: string;
-  bucket: string;
-  accessKeyId: string;
-  secretAccessKey: string;
-  forcePathStyle: boolean;
-  prefix: string;
-  expiresSeconds: number;
-}
+export type TranscribeProvider = "speaches" | "openai";
+
+export const DEFAULT_WHISPER_MODEL = "Systran/faster-whisper-base";
+export const DEFAULT_WHISPER_BASE_URL = "http://localhost:8000/v1";
 
 export interface AppConfig {
   wahaUrl: string;
@@ -20,13 +14,17 @@ export interface AppConfig {
   wahaSession: string;
   wahaGroupId?: string;
   intervalMinutes: number;
+  transcribeProvider: TranscribeProvider;
+  whisperBaseUrl: string;
+  whisperModel: string;
+  whisperApiKey?: string;
   openaiApiKey?: string;
+  maxInlineFileMb: number;
   webhookUrl?: string;
   webhookKey: string;
   webhookHeader: string;
   repoAliases: RepoAlias[];
   dataDir: string;
-  storage?: StorageConfig;
 }
 
 export const DEFAULT_WEBHOOK_HEADER = "Authorization: Bearer ${GROKBOT_WEBHOOK_KEY}";
@@ -88,39 +86,10 @@ function positiveNumber(env: NodeJS.ProcessEnv, name: string, fallback: number):
   return value;
 }
 
-function booleanEnv(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean {
-  const raw = optional(env, name);
-  if (!raw) return fallback;
-  if (raw === "true" || raw === "1") return true;
-  if (raw === "false" || raw === "0") return false;
-  throw new Error(`${name} must be true or false`);
-}
-
-function loadStorage(env: NodeJS.ProcessEnv): StorageConfig | undefined {
-  const bucket = optional(env, "STORAGE_BUCKET");
-  const accessKeyId = optional(env, "STORAGE_ACCESS_KEY_ID");
-  const secretAccessKey = optional(env, "STORAGE_SECRET_ACCESS_KEY");
-  if (!bucket && !accessKeyId && !secretAccessKey && !optional(env, "STORAGE_ENDPOINT")) {
-    return undefined;
-  }
-  if (!bucket || !accessKeyId || !secretAccessKey) {
-    throw new Error(
-      "STORAGE_BUCKET, STORAGE_ACCESS_KEY_ID, and STORAGE_SECRET_ACCESS_KEY must all be set to upload files",
-    );
-  }
-  const endpoint = optional(env, "STORAGE_ENDPOINT");
-  let prefix = optional(env, "STORAGE_PREFIX") ?? "wa-ingest/";
-  if (prefix && !prefix.endsWith("/")) prefix += "/";
-  return {
-    endpoint,
-    region: optional(env, "STORAGE_REGION") ?? "auto",
-    bucket,
-    accessKeyId,
-    secretAccessKey,
-    forcePathStyle: booleanEnv(env, "STORAGE_FORCE_PATH_STYLE", Boolean(endpoint)),
-    prefix,
-    expiresSeconds: positiveNumber(env, "STORAGE_URL_EXPIRES_SECONDS", 60 * 60 * 24 * 7),
-  };
+function transcribeProvider(env: NodeJS.ProcessEnv): TranscribeProvider {
+  const raw = optional(env, "TRANSCRIBE_PROVIDER") ?? "speaches";
+  if (raw === "speaches" || raw === "openai") return raw;
+  throw new Error("TRANSCRIBE_PROVIDER must be speaches or openai");
 }
 
 export function loadConfig(mode: ConfigMode, env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -130,13 +99,17 @@ export function loadConfig(mode: ConfigMode, env: NodeJS.ProcessEnv = process.en
     wahaSession: optional(env, "WAHA_SESSION") ?? "default",
     wahaGroupId: optional(env, "WAHA_GROUP_ID"),
     intervalMinutes: positiveNumber(env, "INTERVAL_MINUTES", 5),
+    transcribeProvider: transcribeProvider(env),
+    whisperBaseUrl: (optional(env, "WHISPER_BASE_URL") ?? DEFAULT_WHISPER_BASE_URL).replace(/\/+$/, ""),
+    whisperModel: optional(env, "WHISPER_MODEL") ?? DEFAULT_WHISPER_MODEL,
+    whisperApiKey: optional(env, "WHISPER_API_KEY"),
     openaiApiKey: optional(env, "OPENAI_API_KEY"),
+    maxInlineFileMb: positiveNumber(env, "MAX_INLINE_FILE_MB", 5),
     webhookUrl: optional(env, "GROKBOT_WEBHOOK_URL"),
     webhookKey: optional(env, "GROKBOT_WEBHOOK_KEY") ?? "",
     webhookHeader: optional(env, "GROKBOT_WEBHOOK_HEADER") ?? DEFAULT_WEBHOOK_HEADER,
     repoAliases: parseRepoAliases(optional(env, "REPO_ALIASES")),
     dataDir: optional(env, "DATA_DIR") ?? "/data",
-    storage: loadStorage(env),
   };
   if (mode === "worker") {
     if (!config.wahaGroupId) throw new Error("Missing required environment variable WAHA_GROUP_ID");
