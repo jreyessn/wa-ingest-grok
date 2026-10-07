@@ -1,0 +1,58 @@
+# wa-ingest-grok
+# Coolify: deploy this compose file and set the variables from .env.example.
+# QR login and the group list run inside the worker container:
+#   docker compose exec worker npm run login
+#   docker compose exec worker npm run groups
+#   docker compose exec worker npm run once
+
+services:
+  waha:
+    image: devlikeapro/waha:latest
+    restart: unless-stopped
+    # WEBJS (the default engine in this image) runs Chromium and needs a larger /dev/shm.
+    shm_size: "2gb"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    volumes:
+      - waha-sessions:/app/.sessions
+      - waha-media:/app/.media
+    environment:
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
+      WAHA_NO_API_KEY: ${WAHA_NO_API_KEY:-true}
+      WHATSAPP_DEFAULT_ENGINE: ${WHATSAPP_DEFAULT_ENGINE:-WEBJS}
+      # media.url is built from this base so the worker can download files on the compose network.
+      WAHA_BASE_URL: http://waha:3000
+
+  worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - waha
+    volumes:
+      - worker-data:/data
+    environment:
+      WAHA_URL: ${WAHA_URL:-http://waha:3000}
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
+      WAHA_SESSION: ${WAHA_SESSION:-default}
+      WAHA_GROUP_ID: ${WAHA_GROUP_ID:-}
+      INTERVAL_MINUTES: ${INTERVAL_MINUTES:-5}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GROKBOT_WEBHOOK_URL: ${GROKBOT_WEBHOOK_URL:-}
+      GROKBOT_WEBHOOK_KEY: ${GROKBOT_WEBHOOK_KEY:-}
+      GROKBOT_WEBHOOK_HEADER: ${GROKBOT_WEBHOOK_HEADER:-}
+      STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-}
+      STORAGE_REGION: ${STORAGE_REGION:-auto}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-}
+      STORAGE_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY_ID:-}
+      STORAGE_SECRET_ACCESS_KEY: ${STORAGE_SECRET_ACCESS_KEY:-}
+      STORAGE_FORCE_PATH_STYLE: ${STORAGE_FORCE_PATH_STYLE:-}
+      STORAGE_PREFIX: ${STORAGE_PREFIX:-}
+      STORAGE_URL_EXPIRES_SECONDS: ${STORAGE_URL_EXPIRES_SECONDS:-}
+      REPO_ALIASES: ${REPO_ALIASES:-}
+      DATA_DIR: /data
+
+volumes:
+  waha-sessions:
+  waha-media:
+  worker-data:

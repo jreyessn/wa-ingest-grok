@@ -1,0 +1,31 @@
+{
+  "name": "wa-ingest-grok",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Forward one WhatsApp group's raw messages (with transcripts and file URLs) to a webhook.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "login": "node dist/cli.js login",
+    "groups": "node dist/cli.js groups",
+    "once": "node dist/cli.js once",
+    "test": "tsx --test test/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.901.0",
+    "@aws-sdk/s3-request-presigner": "^3.901.0",
+    "pdf-parse": "^2.4.5",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}
