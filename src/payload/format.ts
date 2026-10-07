@@ -14,7 +14,7 @@ export interface OutboundMessage {
   mime_type: string | null;
   file_name: string | null;
   data_base64: string | null;
-  note: typeof TOO_LARGE_NOTE | null;
+  note: string | null;
   reply_to: string | null;
 }
 

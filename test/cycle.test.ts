@@ -53,6 +53,7 @@ function deps(overrides: Partial<CycleDeps> = {}): { deps: CycleDeps; posts: Web
       posts.push(payload);
     },
     now: () => 1_704_067_200_000,
+    sleep: async () => {},
     ...overrides,
   };
   return { deps: base, posts, cursor };
@@ -171,6 +172,170 @@ describe("runCycle", () => {
     assert.equal(harness.posts[0]?.messages[0]?.type, "video");
     assert.equal(harness.posts[0]?.messages[0]?.transcript, "video words");
     assert.equal(harness.posts[0]?.messages[0]?.data_base64, null);
+    assert.equal(harness.posts[0]?.messages[0]?.mime_type, "video/mp4");
+    assert.equal(harness.posts[0]?.messages[0]?.file_name, "clip.mp4");
+    assert.equal(harness.posts[0]?.messages[0]?.note, null);
+  });
+
+  it("retries a WEBJS video until media.url appears, then transcribes it", async () => {
+    const urls: string[] = [];
+    let refetches = 0;
+    const harness = deps({
+      listMessages: async () => [
+        {
+          id: "false_120363012345@g.us_VID",
+          timestamp: 1704067260,
+          from: "120363012345@g.us",
+          participant: "5491111111111@lid",
+          hasMedia: true,
+          media: { url: null, mimetype: "video/mp4", filename: null, error: null },
+          _data: { type: "video", mimetype: "video/mp4", filename: "ajustesfacturacion.mp4" },
+        },
+      ],
+      refetchMedia: async () => {
+        refetches += 1;
+        if (refetches < 2) return { url: null, mimetype: "video/mp4", filename: "ajustesfacturacion.mp4", error: null };
+        return {
+          url: "http://localhost:3000/api/files/default/false_120363012345@g.us_VID.mp4",
+          mimetype: "video/mp4",
+          filename: "ajustesfacturacion.mp4",
+          error: null,
+        };
+      },
+      download: async (url) => {
+        urls.push(url);
+        return { data: Buffer.from("video-bytes"), contentType: "video/mp4" };
+      },
+    });
+    harness.cursor.value = { lastTimestamp: 1_704_067_200_000, seenIdsAtTimestamp: [] };
+    const result = await runCycle(harness.deps);
+    assert.equal(result.sent, true);
+    assert.equal(refetches, 2);
+    assert.equal(urls.length, 1);
+    const message = harness.posts[0]?.messages[0];
+    assert.equal(message?.type, "video");
+    assert.equal(message?.author, "5491111111111@lid");
+    assert.equal(message?.transcript, "transcribed words");
+    assert.equal(message?.mime_type, "video/mp4");
+    assert.equal(message?.file_name, "ajustesfacturacion.mp4");
+    assert.equal(message?.note, null);
+    assert.equal(harness.cursor.value?.seenIdsAtTimestamp.includes("false_120363012345@g.us_VID"), true);
+  });
+
+  it("does not advance the cursor past a video whose media is still missing", async () => {
+    const harness = deps({
+      listMessages: async () => [
+        {
+          id: "video-pending",
+          timestamp: 1704067260,
+          from: "120363012345@g.us",
+          participant: "5491111111111@lid",
+          hasMedia: true,
+          media: { url: null, mimetype: "video/mp4", filename: null },
+          _data: { filename: "ajustesfacturacion.mp4", type: "video" },
+        },
+        {
+          id: "later-text",
+          timestamp: 1704067320,
+          from: "120363012345@g.us",
+          participant: "5491111111111@lid",
+          body: "despues",
+        },
+      ],
+      refetchMedia: async () => ({ url: null, mimetype: "video/mp4", filename: "ajustesfacturacion.mp4", error: null }),
+    });
+    harness.cursor.value = { lastTimestamp: 1_704_067_200_000, seenIdsAtTimestamp: [] };
+    const result = await runCycle(harness.deps);
+    assert.equal(result.sent, false);
+    assert.equal(harness.posts.length, 0);
+    assert.equal(harness.cursor.value?.lastTimestamp, 1_704_067_200_000);
+    assert.equal(harness.cursor.value?.mediaHolds?.["video-pending"], 1);
+    assert.equal(harness.cursor.value?.seenIdsAtTimestamp.includes("later-text"), false);
+  });
+
+  it("sends download_failed after the video has been held for three cycles", async () => {
+    const harness = deps({
+      listMessages: async () => [
+        {
+          id: "video-pending",
+          timestamp: 1704067260,
+          from: "120363012345@g.us",
+          participant: "5491111111111@lid",
+          hasMedia: true,
+          media: { url: null, mimetype: "video/mp4", filename: null, error: "not ready" },
+          _data: { type: "video", filename: "ajustesfacturacion.mp4" },
+        },
+      ],
+      refetchMedia: async () => null,
+    });
+    harness.cursor.value = {
+      lastTimestamp: 1_704_067_200_000,
+      seenIdsAtTimestamp: [],
+      mediaHolds: { "video-pending": 2 },
+    };
+    const result = await runCycle(harness.deps);
+    assert.equal(result.sent, true);
+    const message = harness.posts[0]?.messages[0];
+    assert.equal(message?.transcript, null);
+    assert.equal(message?.data_base64, null);
+    assert.equal(message?.mime_type, "video/mp4");
+    assert.equal(message?.file_name, "ajustesfacturacion.mp4");
+    assert.match(message?.note ?? "", /^download_failed: /);
+    assert.equal(harness.cursor.value?.mediaHolds, undefined);
+    assert.equal(harness.cursor.value?.seenIdsAtTimestamp.includes("video-pending"), true);
+  });
+
+  it("sends transcription_failed with the known file name when ffmpeg or whisper throws", async () => {
+    const harness = deps({
+      listMessages: async () => [
+        {
+          id: "clip",
+          timestamp: 1704067260,
+          participant: "5491111111111@lid",
+          from: "120363012345@g.us",
+          hasMedia: true,
+          media: { url: "http://waha:3000/api/files/clip.mp4", mimetype: "video/mp4", filename: "ajustesfacturacion.mp4" },
+        },
+      ],
+      extractAudio: async () => {
+        throw new Error("ffmpeg exited 1");
+      },
+    });
+    harness.cursor.value = { lastTimestamp: 1_704_067_200_000, seenIdsAtTimestamp: [] };
+    const result = await runCycle(harness.deps);
+    assert.equal(result.sent, true);
+    const message = harness.posts[0]?.messages[0];
+    assert.equal(message?.transcript, null);
+    assert.equal(message?.mime_type, "video/mp4");
+    assert.equal(message?.file_name, "ajustesfacturacion.mp4");
+    assert.equal(message?.note, "transcription_failed: ffmpeg exited 1");
+    assert.equal(harness.cursor.value?.seenIdsAtTimestamp.includes("clip"), true);
+  });
+
+  it("marks an oversized video too_large and still keeps the file name", async () => {
+    const harness = deps({
+      listMessages: async () => [
+        {
+          id: "huge",
+          timestamp: 1704067260,
+          from: "120363012345@g.us",
+          participant: "5491111111111@c.us",
+          hasMedia: true,
+          media: { url: "http://waha:3000/api/files/huge.mp4", mimetype: "video/mp4", filename: "huge.mp4" },
+        },
+      ],
+      download: async () => {
+        throw new MediaTooLargeError(40 * 1024 * 1024, 25 * 1024 * 1024);
+      },
+    });
+    harness.cursor.value = { lastTimestamp: 1_704_067_200_000, seenIdsAtTimestamp: [] };
+    await runCycle(harness.deps);
+    const message = harness.posts[0]?.messages[0];
+    assert.equal(message?.note, "too_large");
+    assert.equal(message?.mime_type, "video/mp4");
+    assert.equal(message?.file_name, "huge.mp4");
+    assert.equal(message?.transcript, null);
+    assert.equal(harness.cursor.value?.seenIdsAtTimestamp.includes("huge"), true);
   });
 
   it("inlines a pdf as base64 plus extracted text, and does not advance the cursor when the webhook fails", async () => {

@@ -183,3 +183,46 @@ describe("sessionForLogin", () => {
     assert.deepEqual(calls, ["GET /api/sessions/default"]);
   });
 });
+
+describe("message media", () => {
+  it("reads a WEBJS video whose url is still null and whose filename is on _data", async () => {
+    const client = new WahaClient("http://waha:3000", "default", "secret", async (input, init) => {
+      const url = new URL(String(input));
+      assert.equal(url.pathname, "/api/default/chats/120363012345%40g.us/messages/false_120363012345%40g.us_VID");
+      assert.equal(url.searchParams.get("downloadMedia"), "true");
+      assert.equal(new Headers(init?.headers).get("X-Api-Key"), "secret");
+      return json({
+        id: "false_120363012345@g.us_VID",
+        timestamp: 1704067260,
+        from: "120363012345@g.us",
+        hasMedia: true,
+        media: { url: null, mimetype: "video/mp4", filename: null, error: null },
+        _data: { type: "video", filename: "ajustesfacturacion.mp4", mimetype: "video/mp4" },
+      });
+    });
+    const media = await client.getMessageMedia("120363012345@g.us", "false_120363012345@g.us_VID");
+    assert.equal(media?.url, null);
+    assert.equal(media?.mimetype, "video/mp4");
+    assert.equal(media?.filename, "ajustesfacturacion.mp4");
+  });
+
+  it("downloads a localhost file URL from the configured WAHA host", async () => {
+    let seen = "";
+    const client = new WahaClient("http://waha:3000", "default", "secret", async (input, init) => {
+      seen = String(input);
+      assert.equal(new Headers(init?.headers).get("X-Api-Key"), "secret");
+      assert.ok(init?.signal);
+      return new Response(Buffer.from("video-bytes"), {
+        status: 200,
+        headers: { "content-type": "video/mp4" },
+      });
+    });
+    const file = await client.download(
+      "http://localhost:3000/api/files/default/false_120363@g.us_VID.mp4",
+      1024,
+    );
+    assert.equal(seen, "http://waha:3000/api/files/default/false_120363@g.us_VID.mp4");
+    assert.equal(file.data.toString(), "video-bytes");
+    assert.equal(file.contentType, "video/mp4");
+  });
+});

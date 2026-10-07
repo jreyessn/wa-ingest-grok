@@ -1,5 +1,5 @@
-import { log } from "../log.js";
-import { readSerializedId } from "../parse/messages.js";
+import { errorMessage, log } from "../log.js";
+import { mediaOf, parseWahaMessage, readSerializedId, type MediaRef } from "../parse/messages.js";
 
 /**
  * WAHA HTTP API (verified against https://waha.devlike.pro/docs/):
@@ -27,12 +27,6 @@ export interface WahaSession {
 export interface WahaGroup {
   id: string;
   name: string;
-}
-
-export interface WahaMedia {
-  url: string | null;
-  mimetype: string | null;
-  filename: string | null;
 }
 
 const PAGE_SIZE = 100;
@@ -157,28 +151,49 @@ export class WahaClient {
     return collected;
   }
 
-  async getMessageMedia(chatId: string, messageId: string): Promise<WahaMedia | null> {
+  async getMessageMedia(chatId: string, messageId: string): Promise<MediaRef | null> {
     const params = new URLSearchParams({ downloadMedia: "true" });
     const path =
       `/api/${encodeURIComponent(this.session)}/chats/${encodeURIComponent(chatId)}` +
       `/messages/${encodeURIComponent(messageId)}?${params}`;
+    log("info", "waha.media.refetch", { chatId, messageId });
     const response = await this.request(path);
-    if (response.status === 404) return null;
+    if (response.status === 404) {
+      log("warn", "waha.media.refetch_missing", { chatId, messageId });
+      return null;
+    }
     if (!response.ok) throw await this.failure("get message", response);
-    const body = (await response.json()) as { media?: { url?: unknown; mimetype?: unknown; filename?: unknown } | null };
-    return {
-      url: typeof body.media?.url === "string" ? body.media.url : null,
-      mimetype: typeof body.media?.mimetype === "string" ? body.media.mimetype : null,
-      filename: typeof body.media?.filename === "string" ? body.media.filename : null,
-    };
+    const body: unknown = await response.json();
+    const media = parseWahaMessage(body)?.media ?? (body && typeof body === "object" ? mediaOf(body) : null);
+    log("info", "waha.media.refetch_result", {
+      chatId,
+      messageId,
+      hasUrl: Boolean(media?.url),
+      mimetype: media?.mimetype ?? null,
+      filename: media?.filename ?? null,
+      error: media?.error ?? null,
+    });
+    return media;
   }
 
   async download(url: string, maxBytes: number): Promise<{ data: Buffer; contentType: string | null }> {
     const resolved = resolveMediaUrl(url, this.baseUrl);
+    const path = mediaPath(resolved);
+    log("info", "waha.media.download", { path });
     const headers = new Headers();
     if (this.apiKey) headers.set("X-Api-Key", this.apiKey);
-    const response = await this.fetchImpl(resolved, { headers });
-    if (!response.ok) throw await this.failure("download media", response);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(resolved, { headers, signal: AbortSignal.timeout(60_000) });
+    } catch (err) {
+      log("error", "waha.media.download_failed", { path, error: errorMessage(err) });
+      throw err;
+    }
+    if (!response.ok) {
+      const failure = await this.failure("download media", response);
+      log("warn", "waha.media.download_failed", { path, error: failure.message });
+      throw failure;
+    }
     const advertised = Number(response.headers.get("content-length") ?? "0");
     if (Number.isFinite(advertised) && advertised > maxBytes) {
       await response.body?.cancel().catch(() => undefined);
@@ -186,6 +201,7 @@ export class WahaClient {
     }
     const data = Buffer.from(await response.arrayBuffer());
     if (data.length > maxBytes) throw new MediaTooLargeError(data.length, maxBytes);
+    log("info", "waha.media.downloaded", { path, bytes: data.length });
     return { data, contentType: response.headers.get("content-type") };
   }
 
@@ -288,10 +304,19 @@ function normalizeGroup(raw: unknown, key?: string): WahaGroup {
   return { id, name };
 }
 
+function mediaPath(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url.slice(0, 180);
+  }
+}
+
 /** WAHA defaults media.url to localhost unless WAHA_BASE_URL is set. Rewrite file URLs onto the configured host. */
 export function resolveMediaUrl(mediaUrl: string, wahaUrl: string): string {
   const base = new URL(wahaUrl.endsWith("/") ? wahaUrl : `${wahaUrl}/`);
   const parsed = new URL(mediaUrl, base);
-  if (!parsed.pathname.startsWith("/api/files/")) return parsed.toString();
+  const localHost = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+  if (!parsed.pathname.startsWith("/api/files/") && !localHost) return parsed.toString();
   return new URL(`${parsed.pathname}${parsed.search}`, base).toString();
 }

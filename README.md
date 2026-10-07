@@ -135,7 +135,7 @@ El bucle normal hace lo mismo cada `INTERVAL_MINUTES`.
 
 ## Día a día
 
-Los logs del worker son una línea JSON. Mira `webhook.sent`, `cycle.no_new_messages`, `webhook.retry`, `webhook.failed`, `waha.needs_login`, `worker.waiting_for_config`, `message.too_large` y `message.enrich_failed`.
+Los logs del worker son una línea JSON. Mira `webhook.sent`, `cycle.no_new_messages`, `webhook.retry`, `webhook.failed`, `waha.needs_login`, `worker.waiting_for_config`, `message.too_large`, `media.download`, `media.download_failed`, `media.deferred` y `media.transcription_failed`.
 
 **WhatsApp desvinculó el dispositivo.** La sesión no está en `WORKING` (`SCAN_QR_CODE`, `STOPPED` o `FAILED`). En el terminal del worker: `npm run login`. Ese comando reinicia la sesión si está en `FAILED` o `STOPPED` y muestra el QR. No borres el volumen salvo que quieras empezar de cero.
 
@@ -152,6 +152,6 @@ Los logs del worker son una línea JSON. Mira `webhook.sent`, `cycle.no_new_mess
 
 **WAHA responde 401.** `WAHA_API_KEY` del worker y el de WAHA no coinciden, o `WAHA_NO_API_KEY` no cuadra con la clave. La misma variable entra en los dos. Reinicia después de cambiarla.
 
-**Audio o vídeo sin transcripción.** Mira los logs de `whisper`: el primer arranque baja el modelo. `message.enrich_failed` en el worker suele ser eso, o un audio de más de 25 MB. El mensaje ya se envió con `transcript` vacío; no se vuelve a transcribir. Si `TRANSCRIBE_PROVIDER=openai` y no hay `OPENAI_API_KEY`, el worker avisa `transcriber.openai_key_missing`.
+**Audio o vídeo sin transcripción.** El mensaje lleva `mime_type`, `file_name` y `note` cuando se conocen. `transcription_failed: …` significa que el archivo se bajó pero Whisper o ffmpeg falló; ese mensaje no se reintenta. `download_failed: …` significa que WAHA todavía no tenía el archivo (`media.url` vacío o la descarga falló). El worker reintenta esa descarga unas veces y, si sigue sin bytes, no manda el mensaje y no avanza el cursor por delante de él (`media.deferred`). El siguiente ciclo lo vuelve a intentar. Tras 3 ciclos lo envía con `note` `download_failed` para no bloquear el grupo. `too_large` es un archivo por encima del tope (25 MB para audio y vídeo, `MAX_INLINE_FILE_MB` para el resto). El primer arranque de `whisper` baja el modelo. Si `TRANSCRIBE_PROVIDER=openai` y no hay `OPENAI_API_KEY`, el worker avisa `transcriber.openai_key_missing`.
 
 **Imagen o PDF sin datos.** Si `note` es `too_large`, el archivo pasa de `MAX_INLINE_FILE_MB`. Sube el tope y reinicia el worker. El JSON crece: 5 MB de archivo son unos 7 MB en base64. No hay URL ni disco donde recuperar el archivo.

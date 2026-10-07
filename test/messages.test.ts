@@ -153,6 +153,25 @@ describe("parseWahaMessage", () => {
     assert.equal(parsed.text, "desde webjs");
   });
 
+  it("keeps a WEBJS video whose file url is not ready yet", () => {
+    const parsed = parseWahaMessage({
+      id: "false_120363012345@g.us_VID",
+      timestamp: 1704067260,
+      from: GROUP,
+      participant: "5491111111111@lid",
+      hasMedia: true,
+      body: "",
+      media: { url: null, mimetype: "video/mp4", filename: null, error: null },
+      _data: { type: "video", mimetype: "video/mp4", filename: "ajustesfacturacion.mp4" },
+    });
+    assert.ok(parsed);
+    assert.equal(parsed.type, "video");
+    assert.equal(parsed.author, "5491111111111@lid");
+    assert.equal(parsed.media?.url, null);
+    assert.equal(parsed.media?.mimetype, "video/mp4");
+    assert.equal(parsed.media?.filename, "ajustesfacturacion.mp4");
+  });
+
   it("drops objects that are not messages", () => {
     assert.equal(parseWahaMessage(null), null);
     assert.equal(parseWahaMessage({ body: "no id" }), null);
@@ -187,6 +206,15 @@ describe("cursor selection", () => {
     ]);
     assert.equal(next.lastTimestamp, 1_704_067_205_000);
     assert.deepEqual(next.seenIdsAtTimestamp, ["c", "d"]);
+  });
+
+  it("keeps media holds for messages that were not accepted", () => {
+    const next = advanceCursor(
+      { lastTimestamp: 1, seenIdsAtTimestamp: [], mediaHolds: { video: 1, done: 2 } },
+      [{ id: "done", timestampUnixMs: 5 }],
+    );
+    assert.equal(next.lastTimestamp, 5);
+    assert.deepEqual(next.mediaHolds, { video: 1 });
   });
 
   it("keeps older ids when the newest timestamp does not move", () => {

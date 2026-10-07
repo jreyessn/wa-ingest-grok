@@ -4,6 +4,7 @@ export interface MediaRef {
   url: string | null;
   mimetype: string | null;
   filename: string | null;
+  error: string | null;
 }
 
 export interface ParsedMessage {
@@ -20,6 +21,8 @@ export interface ParsedMessage {
 export interface Cursor {
   lastTimestamp: number;
   seenIdsAtTimestamp: string[];
+  /** How many cycles a media message has been held back because the file was not ready. */
+  mediaHolds?: Record<string, number>;
 }
 
 interface ReplyTo {
@@ -39,10 +42,15 @@ interface LooseMessage {
     url?: unknown;
     mimetype?: unknown;
     filename?: unknown;
+    error?: unknown;
   } | null;
+  mediaUrl?: unknown;
   replyTo?: ReplyTo | string | null;
   location?: { latitude?: unknown; longitude?: unknown } | null;
   _data?: {
+    type?: unknown;
+    mimetype?: unknown;
+    filename?: unknown;
     participant?: unknown;
     author?: unknown;
     key?: { participant?: unknown };
@@ -127,9 +135,27 @@ export function kindFromMime(mimetype: string | null, filename: string | null, h
   if (mime.startsWith("audio/") || mime === "application/ogg") return "audio";
   if (mime.startsWith("video/")) return "video";
   if (mime.startsWith("image/")) return "image";
+  if (name.endsWith(".mp4") || name.endsWith(".mov") || name.endsWith(".webm") || name.endsWith(".mkv")) return "video";
+  if (name.endsWith(".ogg") || name.endsWith(".opus") || name.endsWith(".mp3") || name.endsWith(".m4a")) return "audio";
   if (mime === "application/pdf" || name.endsWith(".pdf")) return "document";
   if (mime || hasMedia) return "document";
   return "text";
+}
+
+function kindFromEngine(engineType: string | null, mimetype: string | null, filename: string | null, hasMedia: boolean): MessageType {
+  switch ((engineType ?? "").toLowerCase()) {
+    case "video":
+    case "gif":
+      return "video";
+    case "ptt":
+    case "audio":
+      return "audio";
+    case "image":
+    case "sticker":
+      return "image";
+    default:
+      return kindFromMime(mimetype, filename, hasMedia);
+  }
 }
 
 function replyId(replyTo: LooseMessage["replyTo"]): string | null {
@@ -149,12 +175,31 @@ function textOf(message: LooseMessage): string | null {
   return null;
 }
 
-function mediaOf(message: LooseMessage): MediaRef | null {
-  if (!message.media && message.hasMedia !== true) return null;
+function errorText(value: unknown): string | null {
+  const direct = asString(value);
+  if (direct) return direct.slice(0, 300);
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const message = asString(record.message);
+  const details = asString(record.details);
+  if (message && details) return `${message}: ${details}`.slice(0, 300);
+  return message ?? details;
+}
+
+/** WEBJS puts the original filename and mimetype on `_data` when `media.url` is still null. */
+export function mediaOf(message: LooseMessage): MediaRef | null {
+  const raw = message._data;
+  const engineType = asString(raw?.type)?.toLowerCase() ?? "";
+  const hasEngineMedia = ["video", "gif", "ptt", "audio", "image", "sticker", "document"].includes(engineType);
+  if (!message.media && message.hasMedia !== true && !hasEngineMedia) return null;
+  const mimetype = asString(message.media?.mimetype) ?? asString(raw?.mimetype);
+  const filename = asString(message.media?.filename) ?? asString(raw?.filename);
+  const url = asString(message.media?.url);
   return {
-    url: asString(message.media?.url),
-    mimetype: asString(message.media?.mimetype),
-    filename: asString(message.media?.filename),
+    url,
+    mimetype,
+    filename,
+    error: errorText(message.media?.error),
   };
 }
 
@@ -169,7 +214,12 @@ export function parseWahaMessage(raw: unknown): ParsedMessage | null {
   const timestampUnixMs = timestampToUnixMs(message.timestamp);
   if (!id || timestampUnixMs === null) return null;
   const media = mediaOf(message);
-  const type = kindFromMime(media?.mimetype ?? null, media?.filename ?? null, message.hasMedia === true || Boolean(media));
+  const type = kindFromEngine(
+    asString(message._data?.type),
+    media?.mimetype ?? null,
+    media?.filename ?? null,
+    message.hasMedia === true || Boolean(media),
+  );
   return {
     id,
     author: pickAuthor(message),
@@ -210,7 +260,14 @@ export function advanceCursor(cursor: Cursor, accepted: Array<{ id: string; time
   for (const message of accepted) {
     if (message.timestampUnixMs === lastTimestamp) ids.add(message.id);
   }
-  return { lastTimestamp, seenIdsAtTimestamp: [...ids].sort() };
+  const next: Cursor = { lastTimestamp, seenIdsAtTimestamp: [...ids].sort() };
+  if (!cursor.mediaHolds) return next;
+  const holds: Record<string, number> = {};
+  for (const [id, count] of Object.entries(cursor.mediaHolds)) {
+    if (!accepted.some((message) => message.id === id) && Number.isFinite(count) && count > 0) holds[id] = count;
+  }
+  if (Object.keys(holds).length > 0) next.mediaHolds = holds;
+  return next;
 }
 
 export function emptyCursor(nowMs: number): Cursor {
