@@ -3,6 +3,7 @@ import { JsonCursorStore } from "./cursor/store.js";
 import { errorMessage, log } from "./log.js";
 import { extractAudio } from "./media/ffmpeg.js";
 import { OpenAiCompatibleTranscriber } from "./media/openai-compatible.js";
+import { SpeachesModels } from "./media/speaches-model.js";
 import type { Transcriber } from "./media/transcriber.js";
 import { extractPdfText } from "./pdf/extract.js";
 import { WahaClient } from "./waha/client.js";
@@ -14,32 +15,51 @@ export interface Runtime {
   config: AppConfig;
   waha: WahaClient;
   cycle: CycleDeps;
+  /** No-op unless TRANSCRIBE_PROVIDER=speaches. Does not throw when Whisper is down. */
+  ensureWhisperModel: () => Promise<void>;
 }
 
 export function createTranscriber(config: AppConfig): Transcriber | null {
+  return createTranscriberWithModels(config).transcriber;
+}
+
+function createTranscriberWithModels(config: AppConfig): { transcriber: Transcriber | null; models: SpeachesModels | null } {
   if (config.transcribeProvider === "openai") {
     if (!config.openaiApiKey) {
       log("warn", "transcriber.openai_key_missing");
-      return null;
+      return { transcriber: null, models: null };
     }
-    return new OpenAiCompatibleTranscriber({
-      name: "openai-whisper",
-      baseUrl: "https://api.openai.com/v1",
-      model: "whisper-1",
-      apiKey: config.openaiApiKey,
-    });
+    return {
+      transcriber: new OpenAiCompatibleTranscriber({
+        name: "openai-whisper",
+        baseUrl: "https://api.openai.com/v1",
+        model: "whisper-1",
+        apiKey: config.openaiApiKey,
+      }),
+      models: null,
+    };
   }
-  return new OpenAiCompatibleTranscriber({
-    name: "speaches",
+  const models = new SpeachesModels({
     baseUrl: config.whisperBaseUrl,
     model: config.whisperModel,
     apiKey: config.whisperApiKey,
   });
+  return {
+    transcriber: new OpenAiCompatibleTranscriber({
+      name: "speaches",
+      baseUrl: config.whisperBaseUrl,
+      model: config.whisperModel,
+      apiKey: config.whisperApiKey,
+      prepareModel: () => models.ensureInstalled(),
+      reinstallModel: () => models.reinstall(),
+    }),
+    models,
+  };
 }
 
 export function createRuntime(config: AppConfig): Runtime {
   const waha = new WahaClient(config.wahaUrl, config.wahaSession, config.wahaApiKey);
-  const transcriber = createTranscriber(config);
+  const { transcriber, models } = createTranscriberWithModels(config);
   const cycle: CycleDeps = {
     config,
     listMessages: (chatId, since) => waha.listMessages(chatId, since),
@@ -59,10 +79,27 @@ export function createRuntime(config: AppConfig): Runtime {
       });
     },
   };
-  return { config, waha, cycle };
+  return {
+    config,
+    waha,
+    cycle,
+    ensureWhisperModel: async () => {
+      if (!models) return;
+      try {
+        await models.ensureInstalled();
+      } catch (err) {
+        log("warn", "whisper.model_check_failed", {
+          model: config.whisperModel,
+          error: errorMessage(err),
+          note: "will retry before the next transcription",
+        });
+      }
+    },
+  };
 }
 
 export async function runOnce(runtime: Runtime): Promise<void> {
+  await runtime.ensureWhisperModel();
   const session = await activeSession(runtime.waha);
   if (session.status !== "WORKING") {
     throw new Error(`WAHA session status is ${session.status}. Run npm run login and scan the QR code first.`);

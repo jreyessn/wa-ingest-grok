@@ -21,9 +21,17 @@ El modelo por defecto es `Systran/faster-whisper-base` (multilingüe, unos 150 M
 
 En CPU, el contenedor de Whisper necesita **1–2 GB de RAM** y va bien con **2 vCPU**. Un audio de un minuto en `base` puede tardar alrededor de un minuto en 2 vCPU, y bastante más en 1. WAHA con la imagen `latest` (motor WEBJS, Chromium, `shm_size: 2gb`) suma otros 2 GB. Para los tres servicios cuenta con **4 GB como mínimo y 8 GB si puedes**.
 
-El modelo se baja la primera vez que arranca `whisper` y queda en el volumen `whisper-models`. Hasta que ese arranque termina, una transcripción puede fallar y el mensaje sale con `transcript` vacío.
+El worker, al arrancar y antes de cada transcripción, hace `GET /v1/models`. Si falta `WHISPER_MODEL`, hace `POST /v1/models/{id}` y espera la descarga. La primera vez puede tardar medio minuto o más. El archivo queda en el volumen `whisper-models`. Si Whisper todavía no responde, el worker sigue vivo y lo reintenta en la siguiente transcripción. Si una transcripción responde 404 `not installed`, lo instala y reintenta esa petición una vez.
 
-Para cambiar de modelo, pon el mismo id en `WHISPER_MODEL`. Speaches lo precarga al arrancar y el worker lo manda en cada petición.
+Para cambiar de modelo, pon el id en `WHISPER_MODEL` y reinicia el worker.
+
+Si no se baja solo, desde el host:
+
+```bash
+docker compose exec worker node -e "fetch('http://whisper:8000/v1/models/Systran/faster-whisper-base',{method:'POST'}).then(r=>r.text()).then(console.log)"
+```
+
+En el terminal de Coolify del contenedor `worker`, quita `docker compose exec worker` y deja el `node -e`.
 
 ## Despliegue en Coolify
 
@@ -32,7 +40,7 @@ Para cambiar de modelo, pon el mismo id en `WHISPER_MODEL`. Speaches lo precarga
 3. **Base Directory**: `/`. **Docker Compose Location**: `docker-compose.yml`. Guarda.
 4. Revisa **Docker Compose Content**. No lo edites en Coolify. Si cambias el compose, hazlo en Git y vuelve a cargar la configuración.
 5. **Environment Variables**. Coolify crea las que el compose referencia con `${...}`. Rellena el webhook. `WAHA_GROUP_ID` puede quedar vacío en este primer deploy. Deja `TRANSCRIBE_PROVIDER=speaches`.
-6. **Deploy**. El primer arranque de `whisper` descarga el modelo; puede tardar unos minutos.
+6. **Deploy**. La primera transcripción (o el arranque del worker) descarga el modelo; puede tardar unos minutos.
 
 No hace falta nada más en Coolify aparte del compose y las variables:
 
@@ -57,7 +65,7 @@ Los comandos de abajo se ejecutan **dentro** del contenedor `worker`. En Coolify
 | `INTERVAL_MINUTES` | Cada cuánto mira mensajes nuevos. | `5` |
 | `TRANSCRIBE_PROVIDER` | `speaches` (default, local) u `openai`. | `speaches` |
 | `WHISPER_BASE_URL` | API compatible con OpenAI, sin la ruta `/audio/transcriptions`. | `http://whisper:8000/v1` |
-| `WHISPER_MODEL` | Id del modelo. El mismo valor lo precarga Speaches. | `Systran/faster-whisper-base` |
+| `WHISPER_MODEL` | Id del modelo. El worker lo descarga si Speaches no lo tiene. | `Systran/faster-whisper-base` |
 | `WHISPER_API_KEY` | Solo si más adelante pones `API_KEY` en el contenedor whisper. Vacío = sin cabecera. | vacío |
 | `OPENAI_API_KEY` | Solo si `TRANSCRIBE_PROVIDER=openai`. | `sk-…` |
 | `MAX_INLINE_FILE_MB` | Tope de los bytes que se meten en el JSON. Por encima: `note` = `too_large` y sin `data_base64`. | `5` |
@@ -152,6 +160,6 @@ Los logs del worker son una línea JSON. Mira `webhook.sent`, `cycle.no_new_mess
 
 **WAHA responde 401.** `WAHA_API_KEY` del worker y el de WAHA no coinciden, o `WAHA_NO_API_KEY` no cuadra con la clave. La misma variable entra en los dos. Reinicia después de cambiarla.
 
-**Audio o vídeo sin transcripción.** El mensaje lleva `mime_type`, `file_name` y `note` cuando se conocen. `transcription_failed: …` significa que el archivo se bajó pero Whisper o ffmpeg falló; ese mensaje no se reintenta. `download_failed: …` significa que WAHA todavía no tenía el archivo (`media.url` vacío o la descarga falló). El worker reintenta esa descarga unas veces y, si sigue sin bytes, no manda el mensaje y no avanza el cursor por delante de él (`media.deferred`). El siguiente ciclo lo vuelve a intentar. Tras 3 ciclos lo envía con `note` `download_failed` para no bloquear el grupo. `too_large` es un archivo por encima del tope (25 MB para audio y vídeo, `MAX_INLINE_FILE_MB` para el resto). El primer arranque de `whisper` baja el modelo. Si `TRANSCRIBE_PROVIDER=openai` y no hay `OPENAI_API_KEY`, el worker avisa `transcriber.openai_key_missing`.
+**Audio o vídeo sin transcripción.** El mensaje lleva `mime_type`, `file_name` y `note` cuando se conocen. La primera transcripción espera a que el worker baje el modelo (`whisper.model_download` en los logs). `transcription_failed: …` significa que el archivo se bajó pero Whisper o ffmpeg falló; ese mensaje no se reintenta. `download_failed: …` significa que WAHA todavía no tenía el archivo (`media.url` vacío o la descarga falló). El worker reintenta esa descarga unas veces y, si sigue sin bytes, no manda el mensaje y no avanza el cursor por delante de él (`media.deferred`). El siguiente ciclo lo vuelve a intentar. Tras 3 ciclos lo envía con `note` `download_failed` para no bloquear el grupo. `too_large` es un archivo por encima del tope (25 MB para audio y vídeo, `MAX_INLINE_FILE_MB` para el resto). El primer arranque de `whisper` baja el modelo. Si `TRANSCRIBE_PROVIDER=openai` y no hay `OPENAI_API_KEY`, el worker avisa `transcriber.openai_key_missing`.
 
 **Imagen o PDF sin datos.** Si `note` es `too_large`, el archivo pasa de `MAX_INLINE_FILE_MB`. Sube el tope y reinicia el worker. El JSON crece: 5 MB de archivo son unos 7 MB en base64. No hay URL ni disco donde recuperar el archivo.

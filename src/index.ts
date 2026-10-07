@@ -20,6 +20,8 @@ process.on("SIGINT", () => {
   log("info", "worker.shutdown");
 });
 
+void runtime.ensureWhisperModel();
+
 log("info", "worker.start", {
   wahaUrl: config.wahaUrl,
   session: config.wahaSession,

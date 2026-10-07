@@ -25,7 +25,10 @@ services:
       WAHA_BASE_URL: http://waha:3000
 
   # Speaches (faster-whisper) with an OpenAI-compatible API. CPU image, no published port.
-  # Docs: https://speaches.ai/configuration/ and compose.cpu.yaml from speaches-ai/speaches.
+  # Docs: https://speaches.ai/configuration/
+  # Current source has preload_models, but ghcr.io/speaches-ai/speaches:latest-cpu did not
+  # install the model from PRELOAD_MODELS. The worker downloads WHISPER_MODEL with
+  # POST /v1/models/{id}. The volume keeps that download across restarts.
   whisper:
     image: ghcr.io/speaches-ai/speaches:latest-cpu
     restart: unless-stopped
@@ -37,8 +40,6 @@ services:
       STT_MODEL_TTL: "-1"
       ENABLE_UI: "false"
       LOG_LEVEL: info
-      # JSON list. Pydantic reads it as preload_models and downloads the model before serving.
-      PRELOAD_MODELS: '["${WHISPER_MODEL:-Systran/faster-whisper-base}"]'
 
   worker:
     build: .
