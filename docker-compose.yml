@@ -1,0 +1,74 @@
+# wa-ingest-grok
+# Coolify: deploy this compose file and set the variables from .env.example.
+# QR login and the group list run inside the worker container:
+#   docker compose exec worker npm run login
+#   docker compose exec worker npm run groups
+#   docker compose exec worker npm run once
+
+services:
+  waha:
+    image: devlikeapro/waha:latest
+    restart: unless-stopped
+    # WEBJS (the default engine in this image) runs Chromium and needs a larger /dev/shm.
+    shm_size: "2gb"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    volumes:
+      - waha-sessions:/app/.sessions
+      - waha-media:/app/.media
+    environment:
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
+      WAHA_NO_API_KEY: ${WAHA_NO_API_KEY:-true}
+      WHATSAPP_DEFAULT_ENGINE: ${WHATSAPP_DEFAULT_ENGINE:-WEBJS}
+      # media.url is built from this base so the worker can download files on the compose network.
+      WAHA_BASE_URL: http://waha:3000
+
+  # Speaches (faster-whisper) with an OpenAI-compatible API. CPU image, no published port.
+  # Docs: https://speaches.ai/configuration/
+  # Current source has preload_models, but ghcr.io/speaches-ai/speaches:latest-cpu did not
+  # install the model from PRELOAD_MODELS. The worker downloads WHISPER_MODEL with
+  # POST /v1/models/{id}. The volume keeps that download across restarts.
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    restart: unless-stopped
+    volumes:
+      - whisper-models:/home/ubuntu/.cache/huggingface/hub
+    environment:
+      WHISPER__INFERENCE_DEVICE: cpu
+      WHISPER__COMPUTE_TYPE: int8
+      STT_MODEL_TTL: "-1"
+      ENABLE_UI: "false"
+      LOG_LEVEL: info
+
+  worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - waha
+      - whisper
+    volumes:
+      - worker-data:/data
+    environment:
+      WAHA_URL: ${WAHA_URL:-http://waha:3000}
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
+      WAHA_SESSION: ${WAHA_SESSION:-default}
+      WAHA_GROUP_ID: ${WAHA_GROUP_ID:-}
+      INTERVAL_MINUTES: ${INTERVAL_MINUTES:-5}
+      TRANSCRIBE_PROVIDER: ${TRANSCRIBE_PROVIDER:-speaches}
+      WHISPER_BASE_URL: ${WHISPER_BASE_URL:-http://whisper:8000/v1}
+      WHISPER_MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-base}
+      WHISPER_API_KEY: ${WHISPER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      MAX_INLINE_FILE_MB: ${MAX_INLINE_FILE_MB:-5}
+      GROKBOT_WEBHOOK_URL: ${GROKBOT_WEBHOOK_URL:-}
+      GROKBOT_WEBHOOK_KEY: ${GROKBOT_WEBHOOK_KEY:-}
+      GROKBOT_WEBHOOK_HEADER: ${GROKBOT_WEBHOOK_HEADER:-}
+      REPO_ALIASES: ${REPO_ALIASES:-}
+      DATA_DIR: /data
+
+volumes:
+  waha-sessions:
+  waha-media:
+  whisper-models:
+  worker-data:
