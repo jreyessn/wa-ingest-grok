@@ -107,6 +107,8 @@ El POST lleva `Authorization: Bearer <clave>` (salvo que cambies la cabecera) y 
 
 El QR caduca enseguida. Si deja de valer, el comando imprime otro. También sale en los logs del worker mientras el estado sea `SCAN_QR_CODE`.
 
+Si la sesión está en `FAILED` (por ejemplo un `auth timeout` de WEBJS) o en `STOPPED`, `npm run login` la para y la vuelve a arrancar (`POST /api/sessions/{sesión}/stop` y luego `/start`) antes de mostrar el QR.
+
 Un restart normal no pide QR: la sesión está en `waha-sessions`.
 
 ## El grupo
@@ -135,7 +137,7 @@ El bucle normal hace lo mismo cada `INTERVAL_MINUTES`.
 
 Los logs del worker son una línea JSON. Mira `webhook.sent`, `cycle.no_new_messages`, `webhook.retry`, `webhook.failed`, `waha.needs_login`, `worker.waiting_for_config`, `message.too_large` y `message.enrich_failed`.
 
-**WhatsApp desvinculó el dispositivo.** La sesión no está en `WORKING` (`SCAN_QR_CODE` o `FAILED`). En el terminal del worker: `npm run login`. No borres el volumen salvo que quieras empezar de cero. Si se queda en `FAILED`, reinicia el servicio `waha` y vuelve a lanzar `npm run login`.
+**WhatsApp desvinculó el dispositivo.** La sesión no está en `WORKING` (`SCAN_QR_CODE`, `STOPPED` o `FAILED`). En el terminal del worker: `npm run login`. Ese comando reinicia la sesión si está en `FAILED` o `STOPPED` y muestra el QR. No borres el volumen salvo que quieras empezar de cero.
 
 **No llega nada al webhook.**
 

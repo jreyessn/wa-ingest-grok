@@ -2,7 +2,7 @@ import { loadConfig } from "./config.js";
 import { log } from "./log.js";
 import { printQr } from "./qr.js";
 import { createRuntime, logFailure, runOnce } from "./runtime.js";
-import { activeSession } from "./session.js";
+import { activeSession, sessionForLogin } from "./session.js";
 
 const command = process.argv[2];
 
@@ -23,14 +23,11 @@ async function login(): Promise<void> {
   const runtime = createRuntime(loadConfig("login"));
   let lastQr: string | null = null;
   for (;;) {
-    const session = await activeSession(runtime.waha);
+    const session = await sessionForLogin(runtime.waha);
     log("info", "waha.session", { name: session.name, status: session.status });
     if (session.status === "WORKING") {
       log("info", "login.ready", { session: session.name });
       return;
-    }
-    if (session.status === "FAILED") {
-      throw new Error("WAHA session status is FAILED");
     }
     if (session.status === "SCAN_QR_CODE") {
       lastQr = await printQr(runtime.waha, lastQr);

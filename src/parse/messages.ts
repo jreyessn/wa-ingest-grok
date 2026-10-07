@@ -56,9 +56,35 @@ function asString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * WAHA engines disagree on ids. WEBJS often sends `{ _serialized }` (or `user` + `server`)
+ * where GOWS and NOWEB send a string.
+ */
+export function readSerializedId(value: unknown): string | null {
+  if (typeof value === "string") return asString(value);
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const serialized = asString(record._serialized);
+  if (serialized) return serialized;
+  const user = asString(record.user);
+  const server = asString(record.server);
+  if (user && server) return `${user}@${server}`;
+  if (record.remote !== undefined && record.id !== undefined) {
+    const remote = readSerializedId(record.remote);
+    const local = asString(record.id);
+    if (remote && local && !local.includes("@")) {
+      const fromMe = record.fromMe === true ? "true" : "false";
+      const participant = record.participant ? readSerializedId(record.participant) : null;
+      return participant ? `${fromMe}_${remote}_${local}_${participant}` : `${fromMe}_${remote}_${local}`;
+    }
+  }
+  if (record.id !== undefined && record.id !== value) return readSerializedId(record.id);
+  return null;
+}
+
 /** WhatsApp / WAHA sometimes uses @s.whatsapp.net for the same user as @c.us. */
 export function normalizeJid(value: unknown): string | null {
-  const jid = asString(value);
+  const jid = readSerializedId(value);
   if (!jid) return null;
   if (jid.endsWith("@s.whatsapp.net")) return jid.replace(/@s\.whatsapp\.net$/, "@c.us");
   return jid;
@@ -109,7 +135,7 @@ export function kindFromMime(mimetype: string | null, filename: string | null, h
 function replyId(replyTo: LooseMessage["replyTo"]): string | null {
   if (!replyTo) return null;
   if (typeof replyTo === "string") return asString(replyTo);
-  return asString(replyTo.id);
+  return readSerializedId(replyTo.id) ?? readSerializedId(replyTo);
 }
 
 function textOf(message: LooseMessage): string | null {
@@ -139,7 +165,7 @@ function mediaOf(message: LooseMessage): MediaRef | null {
 export function parseWahaMessage(raw: unknown): ParsedMessage | null {
   if (!raw || typeof raw !== "object") return null;
   const message = raw as LooseMessage;
-  const id = asString(message.id);
+  const id = readSerializedId(message.id);
   const timestampUnixMs = timestampToUnixMs(message.timestamp);
   if (!id || timestampUnixMs === null) return null;
   const media = mediaOf(message);

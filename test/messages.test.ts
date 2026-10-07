@@ -132,6 +132,27 @@ describe("parseWahaMessage", () => {
     assert.equal(timestampToUnixMs("1704067200"), 1704067200000);
   });
 
+  it("reads WEBJS ids and senders stored as _serialized objects", () => {
+    const parsed = parseWahaMessage({
+      id: {
+        fromMe: false,
+        remote: "120363012345@g.us",
+        id: "AAAA",
+        _serialized: "false_120363012345@g.us_AAAA",
+      },
+      timestamp: 1704067200,
+      from: { server: "g.us", user: "120363012345", _serialized: GROUP },
+      participant: { _serialized: "5491111111111@s.whatsapp.net" },
+      body: "desde webjs",
+      replyTo: { id: { _serialized: "false_120363012345@g.us_BBBB" } },
+    });
+    assert.ok(parsed);
+    assert.equal(parsed.id, "false_120363012345@g.us_AAAA");
+    assert.equal(parsed.author, "5491111111111@c.us");
+    assert.equal(parsed.replyTo, "false_120363012345@g.us_BBBB");
+    assert.equal(parsed.text, "desde webjs");
+  });
+
   it("drops objects that are not messages", () => {
     assert.equal(parseWahaMessage(null), null);
     assert.equal(parseWahaMessage({ body: "no id" }), null);
